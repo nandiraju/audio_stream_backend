@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aṇrak — Recordings</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --bg-raised: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-muted: #656d76;
+    --accent: #0969da;
+    --green: #1a7f37;
+    --green-hover: #2da44e;
+    --red: #cf222e;
+    --red-dim: rgba(207, 34, 46, 0.1);
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #1e2126;
+    --bg-raised: #2a2f36;
+    --border: #383e46;
+    --text: #eceff2;
+    --text-muted: #8f959c;
+    --accent: #f97316;
+    --green: #f97316;       /* primary action is orange in this palette */
+    --green-hover: #fb8b3c;
+    --red: #f85149;
+    --red-dim: rgba(248, 81, 73, 0.15);
+  }
+  html[data-theme="dark"] tr:not(.head-row) td,
+  html[data-theme="dark"] .device-pill,
+  html[data-theme="dark"] #theme-toggle {
+    box-shadow: none;
+  }
+  html[data-theme="dark"] .ctl-state.on { color: #f97316; }
+  html[data-theme="dark"] .ctl-state.on .dot { background: #f97316; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding-bottom: 110px;
+    transition: background 0.2s, color 0.2s;
+  }
+  header {
+    padding: 14px 28px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 50; background: var(--bg);
+  }
+  header h1 { font-size: 20px; display: inline-flex; align-items: center; gap: 8px; }
+  header h1 ion-icon { font-size: 24px; color: var(--accent); }
+  header .sub { color: var(--text-muted); font-size: 13px; }
+  #theme-toggle {
+    background: var(--bg-raised); border: 1px solid var(--border); color: var(--text);
+    border-radius: 50%; width: 38px; height: 38px; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 18px;
+  }
+  #theme-toggle:hover { border-color: var(--text-muted); }
+  .device { margin: 20px 28px; }
+  .device h2 {
+    font-size: 15px; color: var(--accent); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .online-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; font-size: 14px; }
+  th { color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable ion-icon { font-size: 12px; vertical-align: -1px; margin-left: 3px; }
+  .check-col { width: 34px; }
+  input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+  input[type="checkbox"]:disabled { cursor: not-allowed; }
+  #sel-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin-left: auto; font-size: 14px;
+  }
+  #sel-count { font-weight: 600; }
+  tr:hover td { background: var(--bg-raised); }
+  td.actions { text-align: right; white-space: nowrap; }
+  .live {
+    color: var(--red); font-size: 12px; font-weight: 600;
+    animation: blink 1.4s ease-in-out infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.35; } }
+  button, a.dl { font-size: 13px; }
+  button.play, button.del, a.dl {
+    display: inline-flex; align-items: center; gap: 6px; vertical-align: middle;
+  }
+  button.play, button.del, a.dl {
+    justify-content: center; cursor: pointer;
+    border-radius: 8px; padding: 8px; line-height: 0;
+  }
+  button.play ion-icon, button.del ion-icon, a.dl ion-icon { font-size: 20px; }
+  button.play { background: var(--green); border: 0; color: white; }
+  button.play:hover { background: var(--green-hover); }
+  button.del {
+    background: transparent; border: 1px solid var(--red); color: var(--red);
+    margin-left: 12px;
+  }
+  button.del:hover { background: var(--red-dim); }
+  a.dl {
+    color: var(--accent); margin-left: 12px; text-decoration: none;
+    border: 1px solid var(--border);
+  }
+  a.dl:hover { border-color: var(--accent); }
+  .empty { color: var(--text-muted); margin: 40px 28px; font-size: 15px; }
+  .device h2 .ctl { font-size: 12px; padding: 4px 10px; }
+  .device-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: 999px; padding: 5px 14px;
+    color: var(--text); font-size: 13px; font-weight: 600;
+  }
+  .ctl-state { font-size: 12px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
+  .ctl-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+  .ctl-state.on .dot { background: #3fb950; }
+  .ctl-state.on { color: #3fb950; }
+  button.ctl {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+  }
+  button.ctl:hover { border-color: var(--text-muted); }
+  button.ctl.start { border-color: var(--green); color: var(--green); }
+  button.ctl.stop { border-color: var(--red); color: var(--red); }
+  button.ctl:disabled { opacity: 0.35; cursor: not-allowed; }
+  dialog#modal {
+    margin: auto; /* the global reset removes the UA's centering — restore it */
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--bg); color: var(--text);
+    padding: 24px 28px; max-width: 440px; width: calc(100vw - 80px);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  }
+  dialog#modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog#modal h3 { font-size: 17px; margin-bottom: 10px; }
+  dialog#modal p {
+    font-size: 14px; color: var(--text-muted);
+    white-space: pre-line; margin-bottom: 22px; line-height: 1.5;
+  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .modal-actions button { padding: 7px 18px; }
+  button.ctl.danger { background: var(--red); border-color: var(--red); color: #fff; }
+  #player-bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--bg-raised); border-top: 1px solid var(--border);
+    padding: 12px 28px; display: none; align-items: center; gap: 18px;
+  }
+  #player-bar.visible { display: flex; }
+  #now-playing { font-size: 13px; color: var(--text-muted); min-width: 200px; }
+  #now-playing b { color: var(--text); display: block; font-size: 14px; }
+  audio { flex: 1; height: 40px; }
+
+  /* ---- mobile: file rows become cards ---- */
+  @media (max-width: 700px) {
+    header { padding: 10px 14px; gap: 8px; }
+    header .sub { display: none; }
+    header h1 { font-size: 17px; flex: 1; }
+    #theme-toggle { width: 32px; height: 32px; font-size: 15px; }
+    #sel-bar {
+      order: 3; width: 100%; margin-left: 0;
+      padding: 4px 0; gap: 6px;
+    }
+    #sel-bar .ctl { font-size: 12px; padding: 4px 8px; }
+    #sel-count { margin-left: auto; white-space: nowrap; font-size: 13px; }
+    .device { margin: 16px 12px; }
+    .device h2 { flex-wrap: wrap; }
+
+    table { display: block; }
+    /* header row becomes a slim toolbar: select-all + sort controls */
+    tr.head-row {
+      display: flex; align-items: center; gap: 14px;
+      padding: 4px 2px 10px;
+    }
+    tr.head-row th { border: none; padding: 0; font-size: 13px; }
+
+    /* each file row becomes a card */
+    tr:not(.head-row) {
+      display: block; position: relative;
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+    }
+    tr:not(.head-row):hover td { background: transparent; }
+    td { display: block; padding: 1px 0; }
+    td.check-col { position: absolute; top: 12px; right: 12px; width: auto; }
+    td:nth-child(2) { font-weight: 600; font-size: 15px; padding-right: 34px; }
+    td:nth-child(3) {
+      color: var(--text-muted); font-size: 12px;
+      word-break: break-all; padding-right: 34px;
+    }
+    td:nth-child(4), td:nth-child(5) {
+      display: inline-block; margin-right: 12px;
+      color: var(--text-muted); font-size: 12px;
+    }
+    td.actions {
+      display: flex; align-items: center; gap: 12px;
+      text-align: left; white-space: normal; margin-top: 10px;
+    }
+    td.actions .dl, td.actions .del { margin-left: 0; }
+
+    #player-bar { flex-wrap: wrap; gap: 8px; padding: 10px 14px; }
+    #now-playing { min-width: 0; width: 100%; }
+    #now-playing b { word-break: break-all; }
+    audio { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><ion-icon name="mic-outline"></ion-icon>Aṇrak</h1>
+  <span class="sub">recordings on this server — list refreshes automatically</span>
+  <div id="sel-bar">
+    <button class="ctl start" id="sel-download"></button>
+    <button class="ctl stop" id="sel-delete"></button>
+    <button class="ctl" id="sel-clear">Clear</button>
+    <span id="sel-count"></span>
+  </div>
+  <button id="theme-toggle" title="Switch between light and dark theme">
+    <ion-icon id="theme-icon" name="moon-outline"></ion-icon>
+  </button>
+</header>
+<div id="list"><div class="empty">Loading…</div></div>
+
+<dialog id="modal">
+  <h3 id="modal-title"></h3>
+  <p id="modal-msg"></p>
+  <div class="modal-actions">
+    <button id="modal-cancel" class="ctl">Cancel</button>
+    <button id="modal-ok" class="ctl"></button>
+  </div>
+</dialog>
+
+<div id="player-bar">
+  <div id="now-playing"><b id="np-file">—</b><span id="np-device"></span></div>
+  <audio id="player" controls></audio>
+</div>
+
+<script>
+  // ---- theme ----
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    // Icon shows the theme the button switches TO.
+    document.getElementById('theme-icon').setAttribute('name',
+      theme === 'dark' ? 'sunny-outline' : 'moon-outline');
+    localStorage.setItem('theme', theme);
+  }
+  document.getElementById('theme-toggle').onclick = function () {
+    var current = document.documentElement.getAttribute('data-theme') || 'light';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+  };
+  applyTheme(localStorage.getItem('theme') || 'light');
+
+  // ---- helpers ----
+  function fmtSize(bytes) {
+    if (bytes > 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes > 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return bytes + ' B';
+  }
+  function fmtDate(iso) {
+    var d = new Date(iso);
+    var opts = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleString(undefined, opts);
+  }
+  function recUrl(device, file) {
+    return '/rec/' + encodeURIComponent(device) + '/' + encodeURIComponent(file);
+  }
+  function fmtDuration(seconds) {
+    if (seconds == null) return '—';
+    var total = Math.round(seconds);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return h ? h + ':' + pad(m) + ':' + pad(s) : m + ':' + pad(s);
+  }
+  function icon(name) {
+    var el = document.createElement('ion-icon');
+    el.setAttribute('name', name);
+    el.setAttribute('aria-hidden', 'true');
+    return el;
+  }
+
+  // ---- modal dialogs (replaces native alert/confirm) ----
+  function showModal(opts) {
+    return new Promise(function (resolve) {
+      var dlg = document.getElementById('modal');
+      document.getElementById('modal-title').textContent = opts.title;
+      document.getElementById('modal-msg').textContent = opts.message || '';
+      var ok = document.getElementById('modal-ok');
+      var cancel = document.getElementById('modal-cancel');
+      ok.textContent = opts.okLabel || 'OK';
+      ok.className = 'ctl' + (opts.danger ? ' danger' : '');
+      cancel.style.display = opts.showCancel ? '' : 'none';
+      ok.onclick = function () { dlg.close('ok'); };
+      cancel.onclick = function () { dlg.close('cancel'); };
+      dlg.onclose = function () { resolve(dlg.returnValue === 'ok'); };
+      dlg.showModal();
+      ok.focus();
+    });
+  }
+  function confirmDialog(title, message, okLabel) {
+    return showModal({ title: title, message: message, okLabel: okLabel,
+                       showCancel: true, danger: true });
+  }
+  function alertDialog(title, message) {
+    return showModal({ title: title, message: message });
+  }
+
+  // ---- playback ----
+  function play(device, file) {
+    var player = document.getElementById('player');
+    player.innerHTML = '';
+    var url = recUrl(device, file);
+    if (file.slice(-5) === '.opus') {
+      var s1 = document.createElement('source');
+      s1.src = url;
+      s1.type = 'audio/ogg; codecs=opus';
+      player.appendChild(s1);
+      // Fallback for browsers without Ogg Opus support: server transcodes to WAV.
+      var s2 = document.createElement('source');
+      s2.src = url + '?fmt=wav';
+      s2.type = 'audio/wav';
+      player.appendChild(s2);
+    } else {
+      var s = document.createElement('source');
+      s.src = url;
+      s.type = 'audio/wav';
+      player.appendChild(s);
+    }
+    document.getElementById('np-file').textContent = file;
+    document.getElementById('np-device').textContent = device;
+    document.getElementById('player-bar').classList.add('visible');
+    player.load();
+    player.play();
+  }
+
+  // ---- delete ----
+  function removeRecording(device, file) {
+    confirmDialog('Delete this recording?',
+                  device + ' / ' + file + '\n\nThis cannot be undone.',
+                  'Delete').then(function (ok) {
+      if (!ok) return;
+      fetch(recUrl(device, file), { method: 'DELETE' })
+        .then(function (r) { return r.json(); })
+        .then(function (result) {
+          if (!result.ok) alertDialog('Could not delete', result.error || 'Unknown error.');
+          refresh();
+        })
+        .catch(function (err) { alertDialog('Delete failed', err.message); });
+    });
+  }
+
+  // ---- remote control ----
+  function sendCommand(deviceId, action, btn) {
+    btn.disabled = true;
+    fetch('/api/command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: deviceId, action: action })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        if (!result.delivered) alertDialog('Device unreachable', 'The device is not connected right now. Make sure the app is open on the iPad.');
+        setTimeout(refresh, 1200); // give the app a moment to change state
+      })
+      .catch(function (err) { alertDialog('Command failed', err.message); })
+      .finally(function () { btn.disabled = false; });
+  }
+
+  function ctlButton(label, iconName, cls, deviceId, action, enabled) {
+    var b = document.createElement('button');
+    b.className = 'ctl ' + cls;
+    b.appendChild(icon(iconName));
+    b.appendChild(document.createTextNode(label));
+    b.disabled = !enabled;
+    if (enabled) b.onclick = function () { sendCommand(deviceId, action, b); };
+    return b;
+  }
+
+  // Section header: device name + state + Start/Stop/Restart. Buttons are
+  // always rendered; they disable when the app isn't connected or the state
+  // doesn't allow the action.
+  function deviceHeader(deviceId, control) {
+    var h = document.createElement('h2');
+    var connected = !!control;
+    var monitoring = connected && control.monitoring;
+
+    var start = ctlButton('Start', 'play-outline', 'start', deviceId, 'start', connected && !monitoring);
+    var stop = ctlButton('Stop', 'stop-outline', 'stop', deviceId, 'stop', monitoring);
+    var restart = ctlButton('Restart', 'refresh-outline', '', deviceId, 'restart', monitoring);
+    if (!connected) {
+      [start, stop, restart].forEach(function (b) { b.title = 'App not connected'; });
+    }
+    h.appendChild(start);
+    h.appendChild(stop);
+    h.appendChild(restart);
+
+    var pill = document.createElement('span');
+    pill.className = 'device-pill';
+    pill.appendChild(document.createTextNode(deviceId));
+    var state = document.createElement('span');
+    state.className = 'ctl-state' + (monitoring ? ' on' : '');
+    var dot = document.createElement('span');
+    dot.className = 'dot';
+    state.appendChild(dot);
+    state.appendChild(document.createTextNode(
+      !connected ? 'offline' : (monitoring ? 'monitoring' : 'idle')));
+    pill.appendChild(state);
+    h.appendChild(pill);
+
+    return h;
+  }
+
+  // ---- multi-select ----
+  var selected = new Set(); // keys "device file"
+
+  function selKey(device, file) { return device + ' ' + file; }
+
+  function updateSelBar() {
+    var bar = document.getElementById('sel-bar');
+    bar.classList.toggle('has-selection', selected.size > 0);
+    document.getElementById('sel-count').textContent = selected.size + ' selected';
+    document.getElementById('sel-download').disabled = !selected.size;
+    document.getElementById('sel-delete').disabled = !selected.size;
+    document.getElementById('sel-clear').disabled = !selected.size;
+  }
+
+  function toggleSelect(device, file, checked) {
+    if (checked) selected.add(selKey(device, file));
+    else selected.delete(selKey(device, file));
+    updateSelBar();
+  }
+
+  function pruneSelection(data) {
+    var valid = new Set();
+    (data.devices || []).forEach(function (dev) {
+      dev.files.forEach(function (f) {
+        if (!f.live) valid.add(selKey(dev.deviceId, f.name));
+      });
+    });
+    selected.forEach(function (k) { if (!valid.has(k)) selected.delete(k); });
+    updateSelBar();
+  }
+
+  function selectedEntries() {
+    return [...selected].map(function (k) {
+      var parts = k.split(' ');
+      return { device: parts[0], file: parts[1] };
+    });
+  }
+
+  (function initSelBar() {
+    var dl = document.getElementById('sel-download');
+    dl.appendChild(icon('download-outline'));
+    dl.appendChild(document.createTextNode('Download selected'));
+    var del = document.getElementById('sel-delete');
+    del.appendChild(icon('trash-outline'));
+    del.appendChild(document.createTextNode('Delete selected'));
+    updateSelBar();
+  })();
+
+  document.getElementById('sel-clear').onclick = function () {
+    selected.clear();
+    updateSelBar();
+    if (lastData) render(lastData);
+  };
+
+  document.getElementById('sel-download').onclick = function () {
+    // Stagger anchor clicks so the browser accepts multiple downloads.
+    selectedEntries().forEach(function (e, i) {
+      setTimeout(function () {
+        var a = document.createElement('a');
+        a.href = recUrl(e.device, e.file);
+        a.download = e.file;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, i * 400);
+    });
+  };
+
+  document.getElementById('sel-delete').onclick = function () {
+    var entries = selectedEntries();
+    if (!entries.length) return;
+    var noun = 'recording' + (entries.length > 1 ? 's' : '');
+    confirmDialog('Delete ' + entries.length + ' ' + noun + '?',
+                  'This cannot be undone.', 'Delete').then(function (ok) {
+      if (!ok) return;
+      Promise.all(entries.map(function (e) {
+        return fetch(recUrl(e.device, e.file), { method: 'DELETE' })
+          .then(function (r) { return r.json(); })
+          .catch(function () { return { ok: false }; });
+      })).then(function (results) {
+        var failed = results.filter(function (r) { return !r.ok; }).length;
+        if (failed) alertDialog('Some deletions failed', failed + ' file(s) could not be deleted.');
+        selected.clear();
+        updateSelBar();
+        refresh();
+      });
+    });
+  };
+
+  // ---- sorting ----
+  var sortState = { key: 'mtime', dir: -1 }; // newest first by default
+  var lastData = null;
+
+  function setSort(key) {
+    if (sortState.key === key) sortState.dir = -sortState.dir;
+    else sortState = { key: key, dir: key === 'name' ? 1 : -1 };
+    if (lastData) render(lastData);
+  }
+
+  function sortFiles(files) {
+    var k = sortState.key, dir = sortState.dir;
+    return files.slice().sort(function (a, b) {
+      var va = a[k] == null ? -1 : a[k];
+      var vb = b[k] == null ? -1 : b[k];
+      if (va < vb) return -dir;
+      if (va > vb) return dir;
+      return 0;
+    });
+  }
+
+  function headerCell(label, key) {
+    var th = document.createElement('th');
+    th.className = 'sortable';
+    th.appendChild(document.createTextNode(label));
+    if (sortState.key === key) {
+      th.appendChild(icon(sortState.dir === 1 ? 'chevron-up-outline' : 'chevron-down-outline'));
+    }
+    th.onclick = function () { setSort(key); };
+    return th;
+  }
+
+  // ---- listing ----
+  function render(data) {
+    lastData = data;
+    pruneSelection(data);
+    var root = document.getElementById('list');
+
+    // Union of devices that have recordings and devices that are connected
+    // for remote control (which may have no recordings yet).
+    var controlsById = {};
+    (data.controls || []).forEach(function (c) { controlsById[c.deviceId] = c; });
+    var byId = {};
+    (data.devices || []).forEach(function (d) { byId[d.deviceId] = d; });
+    Object.keys(controlsById).forEach(function (id) {
+      if (!byId[id]) byId[id] = { deviceId: id, online: false, files: [] };
+    });
+    var all = Object.keys(byId).sort().map(function (id) { return byId[id]; });
+
+    if (!all.length) {
+      root.innerHTML = '<div class="empty">No recordings yet. Start monitoring on the iPad and files will appear here.</div>';
+      return;
+    }
+    root.innerHTML = '';
+    all.forEach(function (dev) {
+      var section = document.createElement('div');
+      section.className = 'device';
+      section.appendChild(deviceHeader(dev.deviceId, controlsById[dev.deviceId]));
+      if (!dev.files.length) {
+        var note = document.createElement('div');
+        note.className = 'empty';
+        note.style.margin = '8px 0 0';
+        note.textContent = 'No recordings yet.';
+        section.appendChild(note);
+        root.appendChild(section);
+        return;
+      }
+
+      var table = document.createElement('table');
+      var headerRow = document.createElement('tr');
+      headerRow.className = 'head-row';
+      var thCheck = document.createElement('th');
+      thCheck.className = 'check-col';
+      var selectAll = document.createElement('input');
+      selectAll.type = 'checkbox';
+      selectAll.title = 'Select all';
+      var selectable = dev.files.filter(function (f) { return !f.live; });
+      selectAll.checked = selectable.length > 0 && selectable.every(function (f) {
+        return selected.has(selKey(dev.deviceId, f.name));
+      });
+      selectAll.onchange = function () {
+        selectable.forEach(function (f) {
+          toggleSelect(dev.deviceId, f.name, selectAll.checked);
+        });
+        render(lastData);
+      };
+      thCheck.appendChild(selectAll);
+      headerRow.appendChild(thCheck);
+      headerRow.appendChild(headerCell('Recorded', 'mtime'));
+      headerRow.appendChild(headerCell('File', 'name'));
+      headerRow.appendChild(headerCell('Duration', 'duration'));
+      headerRow.appendChild(headerCell('Size', 'size'));
+      headerRow.appendChild(document.createElement('th'));
+      table.appendChild(headerRow);
+      sortFiles(dev.files).forEach(function (f) {
+        var tr = document.createElement('tr');
+        var tdCheck = document.createElement('td');
+        tdCheck.className = 'check-col';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        if (f.live) {
+          cb.disabled = true;
+          cb.title = 'Recording in progress';
+        } else {
+          cb.checked = selected.has(selKey(dev.deviceId, f.name));
+          cb.onchange = function () {
+            toggleSelect(dev.deviceId, f.name, cb.checked);
+          };
+        }
+        tdCheck.appendChild(cb);
+        tr.appendChild(tdCheck);
+        var live = f.live ? ' <span class="live">REC</span>' : '';
+        var tdInfo = document.createElement('template');
+        tdInfo.innerHTML =
+          '<td>' + fmtDate(f.mtime) + live + '</td>' +
+          '<td>' + f.name + '</td>' +
+          '<td>' + fmtDuration(f.duration) + '</td>' +
+          '<td>' + fmtSize(f.size) + '</td>';
+        [...tdInfo.content.children].forEach(function (td) { tr.appendChild(td); });
+        var td = document.createElement('td');
+        td.className = 'actions';
+
+        var btn = document.createElement('button');
+        btn.className = 'play';
+        btn.appendChild(icon('play'));
+        btn.title = 'Play';
+        btn.setAttribute('aria-label', 'Play');
+        btn.onclick = function () { play(dev.deviceId, f.name); };
+        td.appendChild(btn);
+
+        var dl = document.createElement('a');
+        dl.className = 'dl';
+        dl.href = recUrl(dev.deviceId, f.name);
+        dl.download = f.name;
+        dl.appendChild(icon('download-outline'));
+        dl.title = 'Download';
+        dl.setAttribute('aria-label', 'Download');
+        td.appendChild(dl);
+
+        var del = document.createElement('button');
+        del.className = 'del';
+        del.appendChild(icon('trash-outline'));
+        del.title = 'Delete';
+        del.setAttribute('aria-label', 'Delete');
+        if (f.live) {
+          del.disabled = true;
+          del.title = 'Recording in progress';
+          del.style.opacity = '0.4';
+          del.style.cursor = 'not-allowed';
+        } else {
+          del.onclick = function () { removeRecording(dev.deviceId, f.name); };
+        }
+        td.appendChild(del);
+
+        tr.appendChild(td);
+        table.appendChild(tr);
+      });
+      section.appendChild(table);
+      root.appendChild(section);
+    });
+  }
+
+  function refresh() {
+    fetch('/api/recordings')
+      .then(function (r) { return r.json(); })
+      .then(render)
+      .catch(function () {});
+  }
+  refresh();
+  setInterval(refresh, 10000);
+</script>
+
+<script type="module" src="https://cdn.jsdelivr.net/npm/ionicons@7.4.0/dist/ionicons/ionicons.esm.js"></script>
+<script nomodule src="https://cdn.jsdelivr.net/npm/ionicons@7.4.0/dist/ionicons/ionicons.js"></script>
+</body>
+</html>
