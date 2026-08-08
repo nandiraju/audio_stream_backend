@@ -1,0 +1,21 @@
+services:
+  anrak:
+    build:
+      context: https://github.com/nandiraju/audio_stream_backend.git
+    container_name: anrak-audio-server
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      - UI_PASSPHRASE=${UI_PASSPHRASE:-osho}
+      - AUDIO_STREAMS_BUCKET=${AUDIO_STREAMS_BUCKET:-audio-streams-725925681354}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - SEGMENT_MINUTES=${SEGMENT_MINUTES:-30}
+    volumes:
+      - anrak-recordings:/app/recordings
+
+volumes:
+  anrak-recordings:

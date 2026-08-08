@@ -1,22 +1,242 @@
 'use strict';
 
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { OggOpusWriter } = require('./oggopus');
+const {
+  S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand,
+} = require('@aws-sdk/client-s3');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const SAVE_AUDIO = process.env.SAVE_AUDIO !== '0';
 const SAVE_DIR = process.env.SAVE_DIR || path.join(__dirname, 'recordings');
+const PUBLIC_DIR = path.join(__dirname, 'public');
 const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
 const SEGMENT_MINUTES = parseInt(process.env.SEGMENT_MINUTES || '30', 10);
+
+// Web UI passphrase gate (separate from AUTH_TOKEN, which guards the device
+// WebSocket streams). Not a substitute for real user accounts — good enough
+// for a single-household monitor.
+const UI_PASSPHRASE = process.env.UI_PASSPHRASE || 'osho';
+const UI_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const uiTokens = new Map(); // token -> issuedAt ms
+
+const S3_BUCKET = process.env.AUDIO_STREAMS_BUCKET || 'audio-streams-725925681354';
+const S3_REGION = process.env.AWS_REGION || 'us-east-1';
+const s3 = new S3Client({ region: S3_REGION });
 
 const clients = new Set();
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args);
+}
+
+// ---------------------------------------------------------------------------
+// Web UI passphrase auth
+// ---------------------------------------------------------------------------
+function safeEqual(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function issueUiToken() {
+  const token = crypto.randomBytes(24).toString('hex');
+  uiTokens.set(token, Date.now());
+  return token;
+}
+
+function requestToken(req, url) {
+  const auth = req.headers['authorization'] || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  return bearer || url.searchParams.get('token') || '';
+}
+
+function checkUiAuth(req, url) {
+  const token = requestToken(req, url);
+  if (!token) return false;
+  const issuedAt = uiTokens.get(token);
+  if (!issuedAt) return false;
+  if (Date.now() - issuedAt > UI_TOKEN_TTL_MS) {
+    uiTokens.delete(token);
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// S3-backed recordings: uploaded here as each segment finalizes, and the web
+// UI's file list/playback/delete all read from the bucket, not local disk.
+// ---------------------------------------------------------------------------
+async function uploadRecordingToS3(deviceId, filePath) {
+  const key = `${deviceId}/${path.basename(filePath)}`;
+  const contentType = filePath.endsWith('.wav') ? 'audio/wav' : 'audio/ogg';
+  try {
+    const stat = fs.statSync(filePath);
+    await s3.send(new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: fs.createReadStream(filePath),
+      ContentLength: stat.size,
+      ContentType: contentType,
+    }));
+    log(`uploaded ${filePath} -> s3://${S3_BUCKET}/${key}`);
+  } catch (err) {
+    log(`S3 upload failed for ${filePath}: ${err.message}`);
+  }
+}
+
+// Duration probing for S3 objects — same header/tail math as the local-disk
+// probes, but via ranged GETs. Objects are immutable once uploaded, so cache
+// by key forever; only files never seen before cost a request.
+const s3DurationCache = new Map(); // key -> seconds | null
+
+function opusDurationFromTail(buf) {
+  const idx = buf.lastIndexOf('OggS');
+  if (idx < 0 || idx + 14 > buf.length) return null;
+  // Granule position = total 48 kHz samples up to the final page (pre-skip 0).
+  return Number(buf.readBigUInt64LE(idx + 6)) / 48000;
+}
+
+function wavDurationFromHeader(buf, size) {
+  if (size <= 44 || buf.length < 44) return 0;
+  const channels = buf.readUInt16LE(22);
+  const sampleRate = buf.readUInt32LE(24);
+  const bitsPerSample = buf.readUInt16LE(34);
+  const bytesPerSecond = sampleRate * channels * (bitsPerSample / 8);
+  if (!bytesPerSecond) return null;
+  return (size - 44) / bytesPerSecond;
+}
+
+async function probeS3Duration(key, size) {
+  if (s3DurationCache.has(key)) return s3DurationCache.get(key);
+  let seconds = null;
+  try {
+    if (key.endsWith('.opus')) {
+      const start = Math.max(0, size - 65536);
+      const obj = await s3.send(new GetObjectCommand({
+        Bucket: S3_BUCKET, Key: key, Range: `bytes=${start}-${size - 1}`,
+      }));
+      seconds = opusDurationFromTail(Buffer.from(await obj.Body.transformToByteArray()));
+    } else if (key.endsWith('.wav')) {
+      const obj = await s3.send(new GetObjectCommand({
+        Bucket: S3_BUCKET, Key: key, Range: 'bytes=0-43',
+      }));
+      seconds = wavDurationFromHeader(Buffer.from(await obj.Body.transformToByteArray()), size);
+    }
+  } catch { /* unreadable — leave null */ }
+  s3DurationCache.set(key, seconds);
+  return seconds;
+}
+
+async function listS3Recordings() {
+  const byDevice = new Map();
+  let ContinuationToken;
+  do {
+    const resp = await s3.send(new ListObjectsV2Command({ Bucket: S3_BUCKET, ContinuationToken }));
+    for (const obj of resp.Contents || []) {
+      const parts = obj.Key.split('/');
+      if (parts.length !== 2) continue;
+      const [deviceId, name] = parts;
+      if (!DEVICE_RE.test(deviceId) || !FILE_RE.test(name)) continue;
+      if (!byDevice.has(deviceId)) byDevice.set(deviceId, []);
+      byDevice.get(deviceId).push({
+        name,
+        size: obj.Size,
+        mtime: obj.LastModified ? new Date(obj.LastModified).toISOString() : null,
+        duration: null,
+      });
+    }
+    ContinuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (ContinuationToken);
+
+  await Promise.all([...byDevice.entries()].flatMap(([deviceId, files]) =>
+    files.map(async (f) => {
+      f.duration = await probeS3Duration(`${deviceId}/${f.name}`, f.size);
+    })
+  ));
+
+  const devices = [...byDevice.entries()]
+    .map(([deviceId, files]) => ({
+      deviceId,
+      files: files.sort((a, b) => (b.mtime || '').localeCompare(a.mtime || '')),
+    }))
+    .sort((a, b) => a.deviceId.localeCompare(b.deviceId));
+  return { devices };
+}
+
+async function serveS3Recording(req, res, device, file) {
+  const key = `${device}/${file}`;
+  try {
+    const obj = await s3.send(new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Range: req.headers.range,
+    }));
+    const headers = {
+      'content-type': obj.ContentType || (file.endsWith('.wav') ? 'audio/wav' : 'audio/ogg'),
+      'accept-ranges': 'bytes',
+    };
+    if (obj.ContentRange) headers['content-range'] = obj.ContentRange;
+    if (obj.ContentLength != null) headers['content-length'] = obj.ContentLength;
+    res.writeHead(req.headers.range ? 206 : 200, headers);
+    obj.Body.pipe(res);
+  } catch (err) {
+    const notFound = err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404;
+    res.writeHead(notFound ? 404 : 500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: notFound ? 'not found' : err.message }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live listen: relays the Ogg Opus pages of a currently-recording session
+// straight to an HTTP response as they're muxed (chunked transfer — same
+// trick Icecast uses), so <audio src="/api/live/:device"> just works. Only
+// supported for opus sessions; the pcm16/WAV fallback has no equivalent tap.
+// ---------------------------------------------------------------------------
+function findLiveOpusSession(deviceId) {
+  for (const c of clients) {
+    if (c.hello && c.hello.deviceId === deviceId && c.hello.codec === 'opus' && c.sink) return c;
+  }
+  return null;
+}
+
+function serveLiveAudio(req, res, device) {
+  const session = findLiveOpusSession(device);
+  if (!session) {
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'device not live' }));
+    return;
+  }
+  res.writeHead(200, {
+    'content-type': 'audio/ogg',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  const sink = session.sink;
+  const listener = {
+    write: (buf) => { if (!res.writableEnded) res.write(buf); },
+    end: () => { if (!res.writableEnded) res.end(); },
+  };
+  sink.addListener(listener);
+  req.on('close', () => sink.removeListener(listener));
+}
+
+async function deleteS3Recording(res, device, file) {
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: `${device}/${file}` }));
+    log(`deleted s3://${S3_BUCKET}/${device}/${file}`);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: err.message }));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,8 +345,10 @@ class ClientSession {
 
   closeSink() {
     if (this.sink) {
+      const filePath = this.sink.filePath;
       this.sink.close();
       this.sink = null;
+      uploadRecordingToS3(this.hello.deviceId, filePath);
     }
   }
 
@@ -367,45 +589,63 @@ function serveRecording(req, res, url) {
 // ---------------------------------------------------------------------------
 // HTTP endpoints + WebSocket server
 // ---------------------------------------------------------------------------
-const INDEX_HTML = path.join(__dirname, 'public', 'index.html');
+const INDEX_HTML = path.join(PUBLIC_DIR, 'index.html');
+const STATIC_RE = /\.(js|mjs|css|svg|png|jpg|ico|json|woff2?|map)$/i;
+const MIME_TYPES = {
+  '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon', '.json': 'application/json',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.map': 'application/json',
+};
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://localhost');
-  if (req.method === 'DELETE') {
-    if (url.pathname.startsWith('/rec/')) {
-      serveRecording(req, res, url);
-    } else {
-      res.writeHead(405);
-      res.end();
-    }
-    return;
-  }
-  if (req.method === 'POST' && url.pathname === '/api/command') {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 4096) req.destroy();
-    });
-    req.on('end', () => {
-      try {
-        const { deviceId, action } = JSON.parse(body);
-        if (!['start', 'stop', 'restart'].includes(action)) throw new Error('bad action');
-        const delivered = sendCommand(String(deviceId), action);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, delivered }));
-      } catch (err) {
-        res.writeHead(400, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
-    });
-    return;
-  }
-  if (req.method !== 'GET') {
-    res.writeHead(405);
+function serveStatic(res, pathname) {
+  const filePath = path.join(PUBLIC_DIR, pathname);
+  if (!filePath.startsWith(path.resolve(PUBLIC_DIR) + path.sep)) {
+    res.writeHead(400);
     res.end();
     return;
   }
-  if (url.pathname === '/') {
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404);
+      res.end('not found');
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, {
+      'content-type': MIME_TYPES[ext] || 'application/octet-stream',
+      'cache-control': 'public, max-age=31536000, immutable',
+    });
+    res.end(data);
+  });
+}
+
+function readJsonBody(req, maxBytes = 4096) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+const S3_REC_RE = /^\/api\/s3\/rec\/([^/]+)\/([^/]+)$/;
+const LIVE_RE = /^\/api\/live\/([^/]+)$/;
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const { pathname } = url;
+
+  // ---- public routes: app shell, static assets, login ----
+  if (req.method === 'GET' && pathname === '/') {
     fs.readFile(INDEX_HTML, (err, html) => {
       if (err) {
         res.writeHead(500);
@@ -420,7 +660,78 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  if (url.pathname === '/status') {
+  if (req.method === 'GET' && STATIC_RE.test(pathname)) {
+    serveStatic(res, pathname);
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/login') {
+    readJsonBody(req)
+      .then(({ passphrase }) => {
+        if (typeof passphrase !== 'string' || !safeEqual(passphrase, UI_PASSPHRASE)) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Invalid passphrase' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, token: issueUiToken() }));
+      })
+      .catch(() => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'bad request' }));
+      });
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/logout') {
+    uiTokens.delete(requestToken(req, url));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // ---- everything below requires a valid UI session token ----
+  if (!checkUiAuth(req, url)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    const s3Match = S3_REC_RE.exec(pathname);
+    if (s3Match) {
+      deleteS3Recording(res, decodeURIComponent(s3Match[1]), decodeURIComponent(s3Match[2]));
+      return;
+    }
+    if (pathname.startsWith('/rec/')) {
+      serveRecording(req, res, url);
+      return;
+    }
+    res.writeHead(405);
+    res.end();
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/command') {
+    readJsonBody(req)
+      .then(({ deviceId, action }) => {
+        if (!['start', 'stop', 'restart'].includes(action)) throw new Error('bad action');
+        const delivered = sendCommand(String(deviceId), action);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, delivered }));
+      })
+      .catch((err) => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      });
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.writeHead(405);
+    res.end();
+    return;
+  }
+
+  if (pathname === '/status') {
     const devices = [...clients].map((c) => ({
       deviceId: c.deviceId,
       codec: c.hello ? c.hello.codec : null,
@@ -432,7 +743,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, saving: SAVE_AUDIO, devices }, null, 2));
     return;
   }
-  if (url.pathname === '/api/recordings') {
+  if (pathname === '/api/recordings') {
     const payload = listRecordings();
     payload.controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
       deviceId,
@@ -442,7 +753,41 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(payload));
     return;
   }
-  if (url.pathname.startsWith('/rec/')) {
+  if (pathname === '/api/controls') {
+    const controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
+      deviceId,
+      monitoring: entry.monitoring,
+    }));
+    const live = [...clients]
+      .filter((c) => c.hello && c.sink)
+      .map((c) => ({ deviceId: c.hello.deviceId, codec: c.hello.codec }));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, controls, live }));
+    return;
+  }
+  const liveMatch = LIVE_RE.exec(pathname);
+  if (liveMatch) {
+    serveLiveAudio(req, res, decodeURIComponent(liveMatch[1]));
+    return;
+  }
+  if (pathname === '/api/s3/recordings') {
+    listS3Recordings()
+      .then((payload) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...payload }));
+      })
+      .catch((err) => {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      });
+    return;
+  }
+  const s3GetMatch = S3_REC_RE.exec(pathname);
+  if (s3GetMatch) {
+    serveS3Recording(req, res, decodeURIComponent(s3GetMatch[1]), decodeURIComponent(s3GetMatch[2]));
+    return;
+  }
+  if (pathname.startsWith('/rec/')) {
     serveRecording(req, res, url);
     return;
   }

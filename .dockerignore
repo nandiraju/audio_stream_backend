@@ -1,0 +1,9 @@
+node_modules
+webapp/node_modules
+recordings
+public
+.git
+.env
+*.log
+.DS_Store
+test-client.js

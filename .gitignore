@@ -2,3 +2,7 @@ node_modules/
 recordings/
 npm-debug.log*
 .DS_Store
+.env
+public/
+webapp/node_modules/
+webapp/dist/

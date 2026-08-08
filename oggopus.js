@@ -56,6 +56,13 @@ class OggOpusWriter {
     this.pending = null;
     this.closed = false;
 
+    // Live-listen tap: the first two pages (ID header + comment header) are
+    // buffered so a listener joining mid-stream can be replayed them before
+    // splicing into the live feed — same trick Icecast uses for Ogg relays.
+    this.headerPages = [];
+    this.listeners = new Set();
+    this._headersDone = false;
+
     const head = Buffer.alloc(19);
     head.write('OpusHead', 0);
     head[8] = 1;                              // version
@@ -73,6 +80,18 @@ class OggOpusWriter {
     vendor.copy(tags, 12);
     tags.writeUInt32LE(0, 12 + vendor.length); // zero user comments
     this._writePage(tags, { granule: 0n });
+    this._headersDone = true;
+  }
+
+  // Subscribe to live page data: replays buffered headers immediately, then
+  // receives every subsequent page as it's written. listener = { write(buf), end() }.
+  addListener(listener) {
+    for (const page of this.headerPages) listener.write(page);
+    this.listeners.add(listener);
+  }
+
+  removeListener(listener) {
+    this.listeners.delete(listener);
   }
 
   writePacket(packet) {
@@ -87,6 +106,8 @@ class OggOpusWriter {
     if (this.pending) this._flushPending(true);
     this.closed = true;
     fs.closeSync(this.fd);
+    for (const listener of this.listeners) listener.end();
+    this.listeners.clear();
   }
 
   _flushPending(eos) {
@@ -119,6 +140,11 @@ class OggOpusWriter {
     const page = Buffer.concat([header, payload]);
     page.writeUInt32LE(crc32(page), 22);
     fs.writeSync(this.fd, page);
+    if (!this._headersDone) {
+      this.headerPages.push(page);
+    } else {
+      for (const listener of this.listeners) listener.write(page);
+    }
   }
 }
 
