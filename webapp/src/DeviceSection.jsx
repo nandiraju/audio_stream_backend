@@ -28,9 +28,9 @@ function sortFiles(files, sortState) {
 
 export default function DeviceSection({
   dev, control, live, sortState, setSort, selected, toggleSelect, onPlay, onDelete, busyCmd,
-  onCommand, onListenLive, isListeningLive,
+  onCommand, onListenLive, isListeningLive, onReconnect,
 }) {
-  const connected = !!control;
+  const connected = !!(control && control.connected);
   const monitoring = connected && control.monitoring;
   const files = sortFiles(dev.files, sortState);
   const canListenLive = live && live.codec === 'opus';
@@ -62,6 +62,17 @@ export default function DeviceSection({
         {cmdButton('Start', 'play-outline', 'start', 'start', connected && !monitoring)}
         {cmdButton('Stop', 'stop-outline', 'stop', 'stop', monitoring)}
         {cmdButton('Restart', 'refresh-outline', '', 'restart', monitoring)}
+        {!connected && (
+          <button
+            className="ctl"
+            disabled={busyCmd === `${dev.deviceId}:reconnect`}
+            title="Re-check the control channel for this device"
+            onClick={() => onReconnect(dev.deviceId)}
+          >
+            <ion-icon name="sync-outline" />
+            {busyCmd === `${dev.deviceId}:reconnect` ? 'Checking…' : 'Reconnect'}
+          </button>
+        )}
         <button
           className={'ctl' + (isListeningLive ? ' start' : '')}
           disabled={!canListenLive}

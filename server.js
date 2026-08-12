@@ -748,6 +748,7 @@ const server = http.createServer((req, res) => {
     payload.controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
       deviceId,
       monitoring: entry.monitoring,
+      connected: entry.ws.readyState === entry.ws.OPEN,
     }));
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(payload));
@@ -757,6 +758,7 @@ const server = http.createServer((req, res) => {
     const controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
       deviceId,
       monitoring: entry.monitoring,
+      connected: entry.ws.readyState === entry.ws.OPEN,
     }));
     const live = [...clients]
       .filter((c) => c.hello && c.sink)
@@ -830,8 +832,10 @@ controlWss.on('connection', (ws, req) => {
     } catch { /* ignore malformed */ }
   });
   ws.on('close', () => {
+    // Keep the entry (marked offline via ws.readyState) instead of deleting it,
+    // so the device stays visible/reconnectable in the UI even with no
+    // recordings left to key its row off of.
     if (deviceId && controlDevices.get(deviceId)?.ws === ws) {
-      controlDevices.delete(deviceId);
       log(`control channel closed: ${deviceId}`);
     }
   });

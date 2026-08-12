@@ -188,6 +188,27 @@ export default function Recordings({ onUnauthorized }) {
     }
   }
 
+  async function reconnectDevice(deviceId) {
+    setBusyCmd(`${deviceId}:reconnect`);
+    try {
+      const ctl = await apiJson('/api/controls');
+      const online = (ctl.controls || []).some((c) => c.deviceId === deviceId && c.connected);
+      await refresh();
+      if (!online) {
+        await confirm({
+          title: 'Still offline',
+          message: `${deviceId} has not reconnected. Make sure the app is open and monitoring on the iPad.`,
+          okLabel: 'OK',
+        });
+      }
+    } catch (err) {
+      if (err instanceof AuthError) return onUnauthorized();
+      await confirm({ title: 'Check failed', message: err.message, okLabel: 'OK' });
+    } finally {
+      setBusyCmd(null);
+    }
+  }
+
   async function handleLogout() {
     await logout();
     onUnauthorized();
@@ -233,6 +254,7 @@ export default function Recordings({ onUnauthorized }) {
               onDelete={removeRecording}
               busyCmd={busyCmd}
               onCommand={sendCommand}
+              onReconnect={reconnectDevice}
               onListenLive={listenLive}
               isListeningLive={!!(nowPlaying && nowPlaying.live && nowPlaying.device === dev.deviceId)}
             />
