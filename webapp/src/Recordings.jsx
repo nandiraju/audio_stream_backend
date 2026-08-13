@@ -10,6 +10,7 @@ function selKey(device, file) {
 export default function Recordings({ onUnauthorized }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
   const [data, setData] = useState({ devices: [], controls: [], live: [] });
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [selected, setSelected] = useState(() => new Set());
   const [sortState, setSortState] = useState({ key: 'mtime', dir: -1 });
   const [nowPlaying, setNowPlaying] = useState(null);
@@ -81,6 +82,19 @@ export default function Recordings({ onUnauthorized }) {
       })),
     }));
   }, [data.devices, controlsById]);
+
+  // Default to the first device, and fall back if the selected one disappears.
+  useEffect(() => {
+    if (!allDevices.length) {
+      if (selectedDeviceId) setSelectedDeviceId('');
+      return;
+    }
+    if (!allDevices.some((d) => d.deviceId === selectedDeviceId)) {
+      setSelectedDeviceId(allDevices[0].deviceId);
+    }
+  }, [allDevices, selectedDeviceId]);
+
+  const selectedDevice = allDevices.find((d) => d.deviceId === selectedDeviceId) || null;
 
   function toggleSelect(device, file, checked) {
     setSelected((prev) => {
@@ -218,6 +232,21 @@ export default function Recordings({ onUnauthorized }) {
     <>
       <header>
         <h1><ion-icon name="mic-outline" />Aṇrak</h1>
+        {allDevices.length > 0 && (
+          <select
+            className="device-select"
+            value={selectedDeviceId}
+            onChange={(e) => setSelectedDeviceId(e.target.value)}
+            aria-label="Select device"
+          >
+            {allDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {(controlsById[d.deviceId] && controlsById[d.deviceId].connected) ? '● ' : '○ '}
+                {d.deviceId}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="sub">recordings in S3 — list refreshes automatically</span>
         <div className="sel-bar">
           <button className="ctl start" disabled={!selected.size} onClick={downloadSelected}>
@@ -239,27 +268,25 @@ export default function Recordings({ onUnauthorized }) {
       <div id="list">
         {allDevices.length === 0 ? (
           <div className="empty">No recordings yet. Start monitoring on the iPad and files will appear here.</div>
-        ) : (
-          allDevices.map((dev) => (
-            <DeviceSection
-              key={dev.deviceId}
-              dev={dev}
-              control={controlsById[dev.deviceId]}
-              live={liveById[dev.deviceId]}
-              sortState={sortState}
-              setSort={setSort}
-              selected={selected}
-              toggleSelect={toggleSelect}
-              onPlay={play}
-              onDelete={removeRecording}
-              busyCmd={busyCmd}
-              onCommand={sendCommand}
-              onReconnect={reconnectDevice}
-              onListenLive={listenLive}
-              isListeningLive={!!(nowPlaying && nowPlaying.live && nowPlaying.device === dev.deviceId)}
-            />
-          ))
-        )}
+        ) : selectedDevice ? (
+          <DeviceSection
+            key={selectedDevice.deviceId}
+            dev={selectedDevice}
+            control={controlsById[selectedDevice.deviceId]}
+            live={liveById[selectedDevice.deviceId]}
+            sortState={sortState}
+            setSort={setSort}
+            selected={selected}
+            toggleSelect={toggleSelect}
+            onPlay={play}
+            onDelete={removeRecording}
+            busyCmd={busyCmd}
+            onCommand={sendCommand}
+            onReconnect={reconnectDevice}
+            onListenLive={listenLive}
+            isListeningLive={!!(nowPlaying && nowPlaying.live && nowPlaying.device === selectedDevice.deviceId)}
+          />
+        ) : null}
       </div>
 
       {nowPlaying && (
