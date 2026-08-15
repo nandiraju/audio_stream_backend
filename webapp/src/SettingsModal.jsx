@@ -61,8 +61,9 @@ export default function SettingsModal({ devices, controlsById, liveById, onClose
         </ul>
 
         <p className="settings-note">
-          Deleting a device permanently removes its recordings and transcripts from S3.
-          A device that is still connected will reappear here with no recordings.
+          Deleting a device permanently removes its recordings and transcripts from S3,
+          and hides it even if the app stays connected. It returns to this list only if
+          that device records again.
         </p>
       </div>
     </div>

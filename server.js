@@ -44,6 +44,44 @@ function log(...args) {
 }
 
 // ---------------------------------------------------------------------------
+// Deleted-device blocklist.
+//
+// Removing a device's recordings is not enough to make it disappear: an app
+// that still holds a control-channel socket re-registers within seconds, so
+// the row returns and the delete looks like it silently failed. Remember which
+// devices were deleted and hide them until they actually record again — a
+// device that opens a new sink is evidently back in use, so it un-hides
+// itself. Persisted under SAVE_DIR so it survives restarts.
+// ---------------------------------------------------------------------------
+const DELETED_DEVICES_FILE = path.join(SAVE_DIR, '.deleted-devices.json');
+let deletedDevices = new Set();
+
+try {
+  deletedDevices = new Set(JSON.parse(fs.readFileSync(DELETED_DEVICES_FILE, 'utf8')));
+} catch { /* first run, or unreadable — start empty */ }
+
+function persistDeletedDevices() {
+  try {
+    fs.mkdirSync(SAVE_DIR, { recursive: true });
+    fs.writeFileSync(DELETED_DEVICES_FILE, JSON.stringify([...deletedDevices]));
+  } catch (err) {
+    log(`could not persist deleted-device list: ${err.message}`);
+  }
+}
+
+function markDeviceDeleted(deviceId) {
+  deletedDevices.add(deviceId);
+  persistDeletedDevices();
+}
+
+function unhideDevice(deviceId) {
+  if (deletedDevices.delete(deviceId)) {
+    log(`[${deviceId}] recording again — un-hiding previously deleted device`);
+    persistDeletedDevices();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Web UI passphrase auth
 // ---------------------------------------------------------------------------
 function safeEqual(a, b) {
@@ -142,6 +180,7 @@ async function listS3Recordings() {
       if (parts.length !== 2) continue;
       const [deviceId, name] = parts;
       if (!DEVICE_RE.test(deviceId)) continue;
+      if (deletedDevices.has(deviceId)) continue;   // deleted, not yet recording again
       if (name.endsWith('.json')) { transcripts.add(obj.Key); continue; }
       if (!FILE_RE.test(name)) continue;
       if (!byDevice.has(deviceId)) byDevice.set(deviceId, []);
@@ -313,6 +352,9 @@ async function deleteS3Device(res, device) {
       controlDevices.delete(device);
       try { control.ws.close(); } catch { /* already gone */ }
     }
+    // Closing the socket is not enough — the app reconnects. Stay hidden until
+    // this device records something new.
+    markDeviceDeleted(device);
 
     log(`deleted device ${device} — ${deleted} object(s) from s3://${S3_BUCKET}`);
     reply(200, { ok: true, deleted });
@@ -409,6 +451,7 @@ class ClientSession {
   }
 
   openSink() {
+    unhideDevice(this.hello.deviceId);
     const dir = path.join(SAVE_DIR, this.hello.deviceId);
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -845,23 +888,27 @@ const server = http.createServer((req, res) => {
   }
   if (pathname === '/api/recordings') {
     const payload = listRecordings();
-    payload.controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
-      deviceId,
-      monitoring: entry.monitoring,
-      connected: entry.ws.readyState === entry.ws.OPEN,
-    }));
+    payload.controls = [...controlDevices.entries()]
+      .filter(([deviceId]) => !deletedDevices.has(deviceId))
+      .map(([deviceId, entry]) => ({
+        deviceId,
+        monitoring: entry.monitoring,
+        connected: entry.ws.readyState === entry.ws.OPEN,
+      }));
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(payload));
     return;
   }
   if (pathname === '/api/controls') {
-    const controls = [...controlDevices.entries()].map(([deviceId, entry]) => ({
-      deviceId,
-      monitoring: entry.monitoring,
-      connected: entry.ws.readyState === entry.ws.OPEN,
-    }));
+    const controls = [...controlDevices.entries()]
+      .filter(([deviceId]) => !deletedDevices.has(deviceId))
+      .map(([deviceId, entry]) => ({
+        deviceId,
+        monitoring: entry.monitoring,
+        connected: entry.ws.readyState === entry.ws.OPEN,
+      }));
     const live = [...clients]
-      .filter((c) => c.hello && c.sink)
+      .filter((c) => c.hello && c.sink && !deletedDevices.has(c.hello.deviceId))
       .map((c) => ({ deviceId: c.hello.deviceId, codec: c.hello.codec }));
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, controls, live }));
