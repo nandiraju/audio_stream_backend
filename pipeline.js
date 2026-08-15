@@ -391,6 +391,13 @@ function drain() {
 // ---------------------------------------------------------------------------
 async function reconcile() {
   await fsp.rm(tmpDir(), { recursive: true, force: true }); // stale WAVs from a killed run
+  // Say plainly what is about to happen. Starting the server against a
+  // directory of recordings uploads and then deletes them, which is correct in
+  // production and a nasty surprise anywhere else.
+  deps.log(`pipeline: scanning ${deps.SAVE_DIR}; local files are ` +
+    (DELETE_LOCAL_AFTER_UPLOAD
+      ? 'DELETED once verified in S3 (DELETE_LOCAL_AFTER_UPLOAD=1)'
+      : 'kept after upload (DELETE_LOCAL_AFTER_UPLOAD=0)'));
   let found = 0;
   let devices;
   try {
