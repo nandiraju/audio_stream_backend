@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeviceSection from './DeviceSection.jsx';
 import TranscriptPanel from './TranscriptPanel.jsx';
+import SettingsModal from './SettingsModal.jsx';
 import { useConfirm } from './ConfirmModal.jsx';
 import { apiJson, authedUrl, AuthError, logout } from './api.js';
 
@@ -26,6 +27,8 @@ export default function Recordings({ onUnauthorized }) {
   const pendingSeekRef = useRef(null);
 
   const [version, setVersion] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [busyDevice, setBusyDevice] = useState(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -238,6 +241,39 @@ export default function Recordings({ onUnauthorized }) {
     refresh();
   }
 
+  async function removeDevice(deviceId) {
+    const dev = allDevices.find((d) => d.deviceId === deviceId);
+    const count = dev ? dev.files.length : 0;
+    const ok = await confirm({
+      title: `Delete "${deviceId}"?`,
+      message: count
+        ? `This permanently deletes ${count} recording${count === 1 ? '' : 's'} and any transcripts for ${deviceId} from S3.\n\nThis cannot be undone.`
+        : `${deviceId} has no recordings. Remove it from the list?\n\nIt will reappear if the device connects again.`,
+      okLabel: 'Delete device',
+      showCancel: true,
+      danger: true,
+    });
+    if (!ok) return;
+    setBusyDevice(deviceId);
+    try {
+      const result = await apiJson(`/api/s3/device/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+      if (selectedDeviceId === deviceId) setSelectedDeviceId('');
+      setTranscript((prev) => (prev && prev.device === deviceId ? null : prev));
+      setNowPlaying((prev) => (prev && prev.device === deviceId ? null : prev));
+      await refresh();
+      await confirm({
+        title: 'Device deleted',
+        message: `Removed ${result.deleted} object${result.deleted === 1 ? '' : 's'} for ${deviceId}.`,
+        okLabel: 'OK',
+      });
+    } catch (err) {
+      if (err instanceof AuthError) return onUnauthorized();
+      await confirm({ title: 'Could not delete device', message: err.message, okLabel: 'OK' });
+    } finally {
+      setBusyDevice(null);
+    }
+  }
+
   async function sendCommand(deviceId, action) {
     setBusyCmd(`${deviceId}:${action}`);
     try {
@@ -319,6 +355,9 @@ export default function Recordings({ onUnauthorized }) {
           <button className="ctl" disabled={!selected.size} onClick={() => setSelected(new Set())}>Clear</button>
           <span className="sel-count">{selected.size} selected</span>
         </div>
+        <button className="ctl" onClick={() => setSettingsOpen(true)} title="Manage devices">
+          <ion-icon name="settings-outline" />Settings
+        </button>
         <button className="ctl" onClick={handleLogout} title="Log out">Log out</button>
         <button id="theme-toggle" title="Switch between light and dark theme"
           onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}>
@@ -351,6 +390,17 @@ export default function Recordings({ onUnauthorized }) {
           />
         ) : null}
       </div>
+
+      {settingsOpen && (
+        <SettingsModal
+          devices={allDevices}
+          controlsById={controlsById}
+          liveById={liveById}
+          busyDevice={busyDevice}
+          onDeleteDevice={removeDevice}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       {transcript && (
         <TranscriptPanel

@@ -3,13 +3,14 @@
 const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { OggOpusWriter } = require('./oggopus');
 const pipeline = require('./pipeline');
 const {
-  S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand,
+  S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand,
 } = require('@aws-sdk/client-s3');
 
 // Surfaced at /api/version and in the web UI header, so a deploy can be
@@ -264,6 +265,60 @@ async function deleteS3Recording(res, device, file) {
   } catch (err) {
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: err.message }));
+  }
+}
+
+// Delete everything belonging to one device: recordings, transcripts, and the
+// local staging copies. Refused while that device is mid-recording — the sink
+// would keep writing and re-upload a partial segment straight afterwards.
+async function deleteS3Device(res, device) {
+  const reply = (code, body) => {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  };
+  if (!DEVICE_RE.test(device)) return reply(400, { ok: false, error: 'bad device id' });
+  if (findLiveOpusSession(device) || [...clients].some((c) => c.hello && c.hello.deviceId === device && c.sink)) {
+    return reply(409, { ok: false, error: 'device is recording right now — stop it first' });
+  }
+
+  try {
+    let deleted = 0;
+    let ContinuationToken;
+    do {
+      const listed = await s3.send(new ListObjectsV2Command({
+        Bucket: S3_BUCKET, Prefix: `${device}/`, ContinuationToken,
+      }));
+      const keys = (listed.Contents || []).map((o) => ({ Key: o.Key }));
+      // DeleteObjects caps at 1000 keys, which is also ListObjectsV2's page
+      // size, so one page maps to exactly one delete request.
+      if (keys.length) {
+        await s3.send(new DeleteObjectsCommand({
+          Bucket: S3_BUCKET, Delete: { Objects: keys, Quiet: true },
+        }));
+        deleted += keys.length;
+      }
+      ContinuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+    } while (ContinuationToken);
+
+    // Drop local staging too, so a reconcile can't resurrect what was deleted.
+    await fsp.rm(path.join(SAVE_DIR, device), { recursive: true, force: true });
+    await fsp.rm(path.join(WAV_CACHE, device), { recursive: true, force: true });
+
+    // The device list the UI renders is the union of S3 prefixes and the
+    // control-channel registry, and that registry keeps an entry for every
+    // device that has ever connected. Without this the row reappears the
+    // instant the list refreshes, looking like the delete silently failed.
+    const control = controlDevices.get(device);
+    if (control) {
+      controlDevices.delete(device);
+      try { control.ws.close(); } catch { /* already gone */ }
+    }
+
+    log(`deleted device ${device} — ${deleted} object(s) from s3://${S3_BUCKET}`);
+    reply(200, { ok: true, deleted });
+  } catch (err) {
+    log(`device delete failed for ${device}: ${err.message}`);
+    reply(500, { ok: false, error: err.message });
   }
 }
 
@@ -670,6 +725,7 @@ function readJsonBody(req, maxBytes = 4096) {
 
 const S3_REC_RE = /^\/api\/s3\/rec\/([^/]+)\/([^/]+)$/;
 const S3_TRANSCRIPT_RE = /^\/api\/s3\/transcript\/([^/]+)\/([^/]+)$/;
+const S3_DEVICE_RE = /^\/api\/s3\/device\/([^/]+)$/;
 const LIVE_RE = /^\/api\/live\/([^/]+)$/;
 
 const server = http.createServer((req, res) => {
@@ -735,6 +791,11 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'DELETE') {
+    const deviceMatch = S3_DEVICE_RE.exec(pathname);
+    if (deviceMatch) {
+      deleteS3Device(res, decodeURIComponent(deviceMatch[1]));
+      return;
+    }
     const s3Match = S3_REC_RE.exec(pathname);
     if (s3Match) {
       deleteS3Recording(res, decodeURIComponent(s3Match[1]), decodeURIComponent(s3Match[2]));

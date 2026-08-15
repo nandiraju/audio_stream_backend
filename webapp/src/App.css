@@ -159,6 +159,36 @@ button.ctl:disabled { opacity: 0.35; cursor: not-allowed; }
 .modal-actions button { padding: 7px 18px; }
 button.ctl.danger { background: var(--red); border-color: var(--red); color: #fff; }
 
+/* Settings / device manager ------------------------------------------------ */
+/* Sits below the confirm dialog, which reuses .modal-backdrop at z-index 100. */
+.settings-backdrop { z-index: 98; }
+.settings-modal { max-width: 520px; padding: 20px 22px; }
+.settings-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px;
+}
+.settings-head h3 { margin: 0; }
+.settings-empty { color: var(--text-muted); font-size: 14px; margin-bottom: 0; }
+.device-list { list-style: none; max-height: 60vh; overflow-y: auto; }
+.device-list li {
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  gap: 4px 12px; padding: 12px 0; border-bottom: 1px solid var(--border);
+}
+.device-list li:last-child { border-bottom: 0; }
+.dl-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dl-name { font-weight: 600; font-size: 14px; word-break: break-all; }
+.dl-meta { grid-column: 1; font-size: 12px; color: var(--text-muted); }
+.dl-del { grid-column: 2; grid-row: 1 / span 2; white-space: nowrap; }
+.settings-note {
+  font-size: 12px; color: var(--text-muted); line-height: 1.5;
+  margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--border);
+}
+
+@media (max-width: 700px) {
+  .device-list li { grid-template-columns: 1fr; }
+  .dl-del { grid-column: 1; grid-row: auto; justify-self: start; margin-top: 8px; }
+}
+
 .player-bar {
   position: fixed; left: 0; right: 0; bottom: 0;
   background: var(--bg-raised); border-top: 1px solid var(--border);
