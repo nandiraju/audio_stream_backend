@@ -7,8 +7,9 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { WebSocketServer } = require('ws');
 const { OggOpusWriter } = require('./oggopus');
+const pipeline = require('./pipeline');
 const {
-  S3Client, PutObjectCommand, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand,
+  S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand,
 } = require('@aws-sdk/client-s3');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -73,23 +74,9 @@ function checkUiAuth(req, url) {
 // S3-backed recordings: uploaded here as each segment finalizes, and the web
 // UI's file list/playback/delete all read from the bucket, not local disk.
 // ---------------------------------------------------------------------------
-async function uploadRecordingToS3(deviceId, filePath) {
-  const key = `${deviceId}/${path.basename(filePath)}`;
-  const contentType = filePath.endsWith('.wav') ? 'audio/wav' : 'audio/ogg';
-  try {
-    const stat = fs.statSync(filePath);
-    await s3.send(new PutObjectCommand({
-      Bucket: S3_BUCKET,
-      Key: key,
-      Body: fs.createReadStream(filePath),
-      ContentLength: stat.size,
-      ContentType: contentType,
-    }));
-    log(`uploaded ${filePath} -> s3://${S3_BUCKET}/${key}`);
-  } catch (err) {
-    log(`S3 upload failed for ${filePath}: ${err.message}`);
-  }
-}
+// Uploads live in pipeline.js — a finished segment is transcribed, PUT with a
+// SHA-256 the bucket validates, read back with HeadObject, and only then
+// deleted from local disk.
 
 // Duration probing for S3 objects — same header/tail math as the local-disk
 // probes, but via ranged GETs. Objects are immutable once uploaded, so cache
@@ -136,6 +123,10 @@ async function probeS3Duration(key, size) {
 
 async function listS3Recordings() {
   const byDevice = new Map();
+  // Transcripts are `<audio key>.json`, so FILE_RE already keeps them out of
+  // the recordings list. Collect them in the same pass instead of discarding,
+  // so flagging which recordings have text costs no extra S3 requests.
+  const transcripts = new Set();
   let ContinuationToken;
   do {
     const resp = await s3.send(new ListObjectsV2Command({ Bucket: S3_BUCKET, ContinuationToken }));
@@ -143,17 +134,24 @@ async function listS3Recordings() {
       const parts = obj.Key.split('/');
       if (parts.length !== 2) continue;
       const [deviceId, name] = parts;
-      if (!DEVICE_RE.test(deviceId) || !FILE_RE.test(name)) continue;
+      if (!DEVICE_RE.test(deviceId)) continue;
+      if (name.endsWith('.json')) { transcripts.add(obj.Key); continue; }
+      if (!FILE_RE.test(name)) continue;
       if (!byDevice.has(deviceId)) byDevice.set(deviceId, []);
       byDevice.get(deviceId).push({
         name,
         size: obj.Size,
         mtime: obj.LastModified ? new Date(obj.LastModified).toISOString() : null,
         duration: null,
+        hasTranscript: false,
       });
     }
     ContinuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (ContinuationToken);
+
+  for (const [deviceId, files] of byDevice) {
+    for (const f of files) f.hasTranscript = transcripts.has(`${deviceId}/${f.name}.json`);
+  }
 
   await Promise.all([...byDevice.entries()].flatMap(([deviceId, files]) =>
     files.map(async (f) => {
@@ -168,6 +166,26 @@ async function listS3Recordings() {
     }))
     .sort((a, b) => a.deviceId.localeCompare(b.deviceId));
   return { devices };
+}
+
+// Transcripts are small and whole-file — no range handling, unlike the audio.
+async function serveS3Transcript(res, device, file) {
+  if (!DEVICE_RE.test(device) || !FILE_RE.test(file)) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'bad path' }));
+    return;
+  }
+  try {
+    const obj = await s3.send(new GetObjectCommand({
+      Bucket: S3_BUCKET, Key: `${device}/${file}.json`,
+    }));
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(await obj.Body.transformToString());
+  } catch (err) {
+    const notFound = err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404;
+    res.writeHead(notFound ? 404 : 500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: notFound ? 'no transcript' : err.message }));
+  }
 }
 
 async function serveS3Recording(req, res, device, file) {
@@ -230,6 +248,10 @@ function serveLiveAudio(req, res, device) {
 async function deleteS3Recording(res, device, file) {
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: `${device}/${file}` }));
+    // Drop the transcript sibling too, or the bucket accumulates orphaned JSON
+    // for audio that no longer exists.
+    await s3.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: `${device}/${file}.json` }))
+      .catch(() => {});
     log(`deleted s3://${S3_BUCKET}/${device}/${file}`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -348,7 +370,7 @@ class ClientSession {
       const filePath = this.sink.filePath;
       this.sink.close();
       this.sink = null;
-      uploadRecordingToS3(this.hello.deviceId, filePath);
+      pipeline.enqueue(this.hello.deviceId, filePath);
     }
   }
 
@@ -566,6 +588,9 @@ function serveRecording(req, res, url) {
     try {
       fs.unlinkSync(path.join(WAV_CACHE, device, `${file}.wav`));
     } catch { /* no cached transcode */ }
+    try {
+      fs.unlinkSync(path.join(SAVE_DIR, device, `${file}.json`));
+    } catch { /* no local transcript */ }
     log(`deleted recording ${device}/${file}`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -638,6 +663,7 @@ function readJsonBody(req, maxBytes = 4096) {
 }
 
 const S3_REC_RE = /^\/api\/s3\/rec\/([^/]+)\/([^/]+)$/;
+const S3_TRANSCRIPT_RE = /^\/api\/s3\/transcript\/([^/]+)\/([^/]+)$/;
 const LIVE_RE = /^\/api\/live\/([^/]+)$/;
 
 const server = http.createServer((req, res) => {
@@ -789,6 +815,11 @@ const server = http.createServer((req, res) => {
     serveS3Recording(req, res, decodeURIComponent(s3GetMatch[1]), decodeURIComponent(s3GetMatch[2]));
     return;
   }
+  const transcriptMatch = S3_TRANSCRIPT_RE.exec(pathname);
+  if (transcriptMatch) {
+    serveS3Transcript(res, decodeURIComponent(transcriptMatch[1]), decodeURIComponent(transcriptMatch[2]));
+    return;
+  }
   if (pathname.startsWith('/rec/')) {
     serveRecording(req, res, url);
     return;
@@ -922,13 +953,31 @@ const heartbeat = setInterval(() => {
 
 wss.on('close', () => clearInterval(heartbeat));
 
+// Shutdown must outlive the uploads it starts. `session.end()` only closes the
+// sinks and queues them; exiting here without draining would leave the final
+// segment on local disk and out of S3 on every deploy. Bounded so a wedged
+// bucket can't hold the container open past its stop grace period — anything
+// left behind is picked up by the next reconcile.
+const SHUTDOWN_DRAIN_MS = parseInt(process.env.SHUTDOWN_DRAIN_MS || '45000', 10);
+
+let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
+  process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log('shutting down, finalizing recordings…');
     for (const session of clients) session.end();
+    const timedOut = Symbol('timeout');
+    const result = await Promise.race([
+      pipeline.drain(),
+      new Promise((r) => setTimeout(() => r(timedOut), SHUTDOWN_DRAIN_MS)),
+    ]);
+    if (result === timedOut) log('drain timed out — leftovers stay local for reconcile');
     process.exit(0);
   });
 }
+
+pipeline.init({ s3, S3_BUCKET, SAVE_DIR, log, liveFilePaths });
 
 server.listen(PORT, () => {
   log(`GuidedVoiceMonitor server listening on :${PORT}`);
@@ -937,4 +986,6 @@ server.listen(PORT, () => {
   log(`  Saving audio       : ${SAVE_AUDIO ? SAVE_DIR : 'disabled (SAVE_AUDIO=0)'}`);
   log(`  Auth token         : ${AUTH_TOKEN ? 'required' : 'not required'}`);
   log(`  Segment length     : ${SEGMENT_MINUTES} min`);
+  // Sweep up whatever the last process left behind before taking new audio.
+  pipeline.reconcile().catch((err) => log(`reconcile failed: ${err.message}`));
 });

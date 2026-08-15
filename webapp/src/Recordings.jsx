@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeviceSection from './DeviceSection.jsx';
+import TranscriptPanel from './TranscriptPanel.jsx';
 import { useConfirm } from './ConfirmModal.jsx';
 import { apiJson, authedUrl, AuthError, logout } from './api.js';
 
@@ -15,7 +16,14 @@ export default function Recordings({ onUnauthorized }) {
   const [sortState, setSortState] = useState({ key: 'mtime', dir: -1 });
   const [nowPlaying, setNowPlaying] = useState(null);
   const [busyCmd, setBusyCmd] = useState(null);
+  const [transcript, setTranscript] = useState(null); // { device, file }
+  const [playhead, setPlayhead] = useState(null);
   const [modal, confirm] = useConfirm();
+
+  const audioRef = useRef(null);
+  // Seeking a file that isn't loaded yet has to wait for its metadata, so the
+  // target time is parked here until the <audio> remounts and reports duration.
+  const pendingSeekRef = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -48,6 +56,15 @@ export default function Recordings({ onUnauthorized }) {
       data.devices.forEach((d) => d.files.forEach((f) => valid.add(selKey(d.deviceId, f.name))));
       const next = new Set([...prev].filter((k) => valid.has(k)));
       return next.size === prev.size ? prev : next;
+    });
+  }, [data]);
+
+  // Close the slide-over if its recording was deleted, here or elsewhere.
+  useEffect(() => {
+    setTranscript((prev) => {
+      if (!prev) return prev;
+      const dev = data.devices.find((d) => d.deviceId === prev.device);
+      return dev && dev.files.some((f) => f.name === prev.file) ? prev : null;
     });
   }, [data]);
 
@@ -114,6 +131,35 @@ export default function Recordings({ onUnauthorized }) {
 
   function play(device, file) {
     setNowPlaying({ device, file });
+  }
+
+  function showTranscript(device, file) {
+    setTranscript((prev) => (prev && prev.device === device && prev.file === file
+      ? null            // clicking the open row's icon again closes the panel
+      : { device, file }));
+  }
+
+  // Jump the player to a transcript segment. If that file isn't loaded, swap it
+  // in first and let onLoadedMetadata apply the seek.
+  function seekTo(device, file, seconds) {
+    const el = audioRef.current;
+    const isCurrent = nowPlaying && !nowPlaying.live
+      && nowPlaying.device === device && nowPlaying.file === file;
+    if (isCurrent && el) {
+      el.currentTime = seconds;
+      el.play().catch(() => { /* autoplay policy — controls are right there */ });
+      return;
+    }
+    pendingSeekRef.current = seconds;
+    setNowPlaying({ device, file });
+  }
+
+  function applyPendingSeek() {
+    const el = audioRef.current;
+    if (!el || pendingSeekRef.current == null) return;
+    el.currentTime = pendingSeekRef.current;
+    pendingSeekRef.current = null;
+    el.play().catch(() => {});
   }
 
   function listenLive(device) {
@@ -285,20 +331,39 @@ export default function Recordings({ onUnauthorized }) {
             onReconnect={reconnectDevice}
             onListenLive={listenLive}
             isListeningLive={!!(nowPlaying && nowPlaying.live && nowPlaying.device === selectedDevice.deviceId)}
+            onTranscript={showTranscript}
+            openTranscript={transcript && transcript.device === selectedDevice.deviceId ? transcript.file : null}
           />
         ) : null}
       </div>
 
+      {transcript && (
+        <TranscriptPanel
+          target={transcript}
+          onClose={() => setTranscript(null)}
+          onSeek={seekTo}
+          // Only drive the follow-along highlight when the open transcript is
+          // the file actually playing.
+          playingTime={nowPlaying && !nowPlaying.live
+            && nowPlaying.device === transcript.device
+            && nowPlaying.file === transcript.file ? playhead : null}
+          onUnauthorized={onUnauthorized}
+        />
+      )}
+
       {nowPlaying && (
-        <div className="player-bar visible">
+        <div className={'player-bar visible' + (transcript ? ' inset' : '')}>
           <div className="now-playing">
             <b>{nowPlaying.live ? 'Live audio' : nowPlaying.file}</b>
             <span>{nowPlaying.device}{nowPlaying.live && <span className="live"> ● LIVE</span>}</span>
           </div>
           <audio
             key={nowPlaying.live ? `live:${nowPlaying.device}` : `${nowPlaying.device}/${nowPlaying.file}`}
+            ref={audioRef}
             controls
             autoPlay
+            onLoadedMetadata={applyPendingSeek}
+            onTimeUpdate={(e) => setPlayhead(e.target.currentTime)}
           >
             <source
               src={nowPlaying.live

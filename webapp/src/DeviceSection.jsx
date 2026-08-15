@@ -49,7 +49,7 @@ function sortFiles(files, sortState) {
 
 export default function DeviceSection({
   dev, control, live, sortState, setSort, selected, toggleSelect, onPlay, onDelete, busyCmd,
-  onCommand, onListenLive, isListeningLive, onReconnect,
+  onCommand, onListenLive, isListeningLive, onReconnect, onTranscript, openTranscript,
 }) {
   const connected = !!(control && control.connected);
   const monitoring = connected && control.monitoring;
@@ -158,6 +158,8 @@ export default function DeviceSection({
                       toggleSelect={toggleSelect}
                       onPlay={onPlay}
                       onDelete={onDelete}
+                      onTranscript={onTranscript}
+                      isOpen={openTranscript === f.name}
                     />
                   );
                 });
@@ -184,7 +186,7 @@ export default function DeviceSection({
   );
 }
 
-function FileRow({ f, dev, groupHeader, selected, toggleSelect, onPlay, onDelete }) {
+function FileRow({ f, dev, groupHeader, selected, toggleSelect, onPlay, onDelete, onTranscript, isOpen }) {
   return (
     <>
       {groupHeader && (
@@ -207,6 +209,15 @@ function FileRow({ f, dev, groupHeader, selected, toggleSelect, onPlay, onDelete
         <td className="actions">
           <button className="play" title="Play" aria-label="Play" onClick={() => onPlay(dev.deviceId, f.name)}>
             <ion-icon name="play" />
+          </button>
+          <button
+            className={'tx' + (isOpen ? ' active' : '')}
+            disabled={!f.hasTranscript}
+            title={f.hasTranscript ? 'Show transcript' : 'No transcript yet'}
+            aria-label="Show transcript"
+            onClick={() => onTranscript(dev.deviceId, f.name)}
+          >
+            <ion-icon name="document-text-outline" />
           </button>
           <a
             className="dl"

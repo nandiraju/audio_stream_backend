@@ -4,6 +4,9 @@ services:
       context: https://github.com/nandiraju/audio_stream_backend.git
     container_name: anrak-audio-server
     restart: unless-stopped
+    # A 30 min segment can still be uploading when the stop signal lands;
+    # docker's 10 s default would SIGKILL mid-PUT. The server drains first.
+    stop_grace_period: 60s
     ports:
       - "8081:8080"
     environment:
@@ -14,6 +17,11 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AUTH_TOKEN=${AUTH_TOKEN:-}
       - SEGMENT_MINUTES=${SEGMENT_MINUTES:-30}
+      # Local recordings are staging only — deleted once verified in S3.
+      - TRANSCRIBE=${TRANSCRIBE:-1}
+      - DELETE_LOCAL_AFTER_UPLOAD=${DELETE_LOCAL_AFTER_UPLOAD:-1}
+      - WHISPER_THREADS=${WHISPER_THREADS:-2}
+      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-auto}
     volumes:
       - anrak-recordings:/app/recordings
 
