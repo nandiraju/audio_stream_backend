@@ -25,10 +25,20 @@ export default function Recordings({ onUnauthorized }) {
   // target time is parked here until the <audio> remounts and reports duration.
   const pendingSeekRef = useRef(null);
 
+  const [version, setVersion] = useState(null);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  // Unauthenticated endpoint — hover the badge for the build SHA.
+  useEffect(() => {
+    fetch('/api/version')
+      .then((r) => r.json())
+      .then((d) => { if (d && d.version) setVersion(d); })
+      .catch(() => { /* older server without /api/version */ });
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -294,6 +304,11 @@ export default function Recordings({ onUnauthorized }) {
           </select>
         )}
         <span className="sub">recordings in S3 — list refreshes automatically</span>
+        {version && (
+          <span className="app-version" title={`build ${version.build}`}>
+            v{version.version}
+          </span>
+        )}
         <div className="sel-bar">
           <button className="ctl start" disabled={!selected.size} onClick={downloadSelected}>
             <ion-icon name="download-outline" />Download selected

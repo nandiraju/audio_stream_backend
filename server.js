@@ -12,6 +12,12 @@ const {
   S3Client, ListObjectsV2Command, GetObjectCommand, DeleteObjectCommand,
 } = require('@aws-sdk/client-s3');
 
+// Surfaced at /api/version and in the web UI header, so a deploy can be
+// confirmed from outside without shell access. BUILD_SHA is stamped by the
+// Dockerfile at image build time.
+const APP_VERSION = require('./package.json').version;
+const BUILD_SHA = process.env.BUILD_SHA || 'dev';
+
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const SAVE_AUDIO = process.env.SAVE_AUDIO !== '0';
 const SAVE_DIR = process.env.SAVE_DIR || path.join(__dirname, 'recordings');
@@ -690,6 +696,13 @@ const server = http.createServer((req, res) => {
     serveStatic(res, pathname);
     return;
   }
+  // Unauthenticated on purpose: confirming which build is live is the first
+  // step of any deploy check, and it exposes nothing but a version string.
+  if (req.method === 'GET' && pathname === '/api/version') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, version: APP_VERSION, build: BUILD_SHA }));
+    return;
+  }
   if (req.method === 'POST' && pathname === '/api/login') {
     readJsonBody(req)
       .then(({ passphrase }) => {
@@ -980,7 +993,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 pipeline.init({ s3, S3_BUCKET, SAVE_DIR, log, liveFilePaths });
 
 server.listen(PORT, () => {
-  log(`GuidedVoiceMonitor server listening on :${PORT}`);
+  log(`GuidedVoiceMonitor v${APP_VERSION} (build ${BUILD_SHA}) listening on :${PORT}`);
   log(`  WebSocket endpoint : ws://<this-host>:${PORT}/stream`);
   log(`  Status endpoint    : http://<this-host>:${PORT}/status`);
   log(`  Saving audio       : ${SAVE_AUDIO ? SAVE_DIR : 'disabled (SAVE_AUDIO=0)'}`);

@@ -49,6 +49,9 @@ RUN mkdir -p /app/recordings && chown node:node /app/recordings
 ENV WHISPER_MODEL=/models/ggml-large-v3-turbo-q5_0.bin \
     WHISPER_VAD_MODEL=/models/ggml-silero-v5.1.2.bin \
     WHISPER_THREADS=2
+# Stamped at build time so /api/version can prove which build is live.
+ARG BUILD_SHA=dev
+ENV BUILD_SHA=${BUILD_SHA}
 EXPOSE 8080
 USER node
 CMD ["node", "server.js"]
